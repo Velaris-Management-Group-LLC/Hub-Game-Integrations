@@ -12,8 +12,43 @@ an active member of your hub and have linked the Steam account they are connecti
      so nobody, including support, can read it back. Lose it and you revoke it and issue another.
 2. Copy this `xive-whitelist` folder into your server's `resources` directory.
 3. Rename `config.CHANGEME.lua` to `config.lua` and paste your key into `Config.ApiKey`.
+   The resource does **not** read `config.CHANGEME.lua` — that name is deliberate, so an upgrade
+   never overwrites your key.
 4. Add `ensure xive-whitelist` to your `server.cfg`.
-5. Restart the server. The console prints the fail policy on start.
+5. Restart the server and **read the console**. One of two lines tells you where you stand:
+
+   ```
+   [xive-whitelist] started. Fail policy: closed (refuse when Xive is unreachable)
+   [xive-whitelist] endpoint: https://api.thexive.com/...  key: xive_fm_2498...
+   ```
+
+   ```
+   [xive-whitelist] NOT CONFIGURED: config.lua was not loaded. Copy config.CHANGEME.lua to config.lua and fill it in.
+   [xive-whitelist] Every player will be refused until this is fixed.
+   ```
+
+6. Connect a player, then check the key in **Settings → Integrations → FiveM**. Once a check has
+   actually reached Xive, the key shows a **last used** time. If it still says *never used*, no
+   request is leaving your server — see Troubleshooting.
+
+## Troubleshooting
+
+**Players stuck on "Deferring connection", and the key shows *never used*.**
+The request is not leaving your server — Xive has never seen it. The console now says which of the
+two causes it is:
+
+| Console line | Cause | Fix |
+|---|---|---|
+| `NOT CONFIGURED: config.lua was not loaded` | `config.CHANGEME.lua` was never renamed | Do step 3, restart the resource |
+| `Xive did not answer within 10s` | outbound HTTPS from the game server is being dropped | Allow outbound 443 to `api.thexive.com` |
+| `request failed with status 0` | DNS or TLS failure on the game server | Check the box can resolve and reach `api.thexive.com` |
+| `Xive rejected this server API key` | the key is wrong, revoked, or from another hub | Issue a new key and paste it into `config.lua` |
+
+Nothing hangs any more: after 10 seconds the resource applies `Config.FailClosed` and the player
+gets an answer either way. A whitelist may say no — it may not say nothing.
+
+**Players refused with "you are not a member".**
+They are either not in the hub, or the account they are connecting with is not linked. See below.
 
 ## What your players need to do
 
@@ -36,8 +71,9 @@ one is opt-in.
 
 ## What gets sent
 
-The connecting player's FiveM identifier list, as-is. Xive reads `steam:` and `discord:` and
-ignores the rest. It never receives their name, their IP, or anything about your server.
+Two identifiers and no others: `steam:` and `license:`. The resource filters the rest out before
+the request is built — Discord id, IP address, Xbox and Rockstar handles never leave your machine.
+Xive never receives the player's name or anything about your server.
 
 Xive answers with whether they are allowed, a reason if not, and — if allowed — their Xive display
 name and role names. Nothing about non-members is returned.
@@ -60,7 +96,7 @@ effect on the next connection attempt, never served from a stale entry.
 | `missing_role` | a member, but without the role this server requires |
 | `member_banned` | banned from the hub |
 | `member_muted` / `member_pending` / `member_left` | membership isn't active |
-| `no_supported_identifier` | no Steam identifier on the connection |
+| `no_supported_identifier` | neither a Steam account nor a license on the connection |
 | `integration_disabled` | the hub turned whitelist checks off |
 | `bad_key` | **your** key is wrong or revoked — a config problem, not the player's |
 
