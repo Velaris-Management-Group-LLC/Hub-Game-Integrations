@@ -12,14 +12,15 @@
 
   ── WHAT IT SENDS ───────────────────────────────────────────────────────────────────────────
 
-  The connecting player's identifier list, verbatim. Xive reads `steam:`, `license:` and
-  `discord:` and ignores the rest; it never receives their name, IP, or anything about your server.
+  Two identifiers, and only two: `steam:` and `license:`. Everything else FiveM knows about the
+  player — their Discord id, their IP address, their Xbox and Rockstar handles — is filtered out
+  here and never leaves your machine. Xive never receives their name or anything about your server.
   It answers with a display name and role names — the same things any member list on Xive already
   shows, and nothing at all about people who are not members.
 
-  ── 🔴 SEND EVERY IDENTIFIER, EXACTLY AS FIVEM GIVES THEM ───────────────────────────────────
+  ── 🔴 SEND THOSE TWO EXACTLY AS FIVEM GIVES THEM ───────────────────────────────────────────
 
-  Two of them matter, and both are handled on Xive's side:
+  Both are handled on Xive's side:
 
     steam:    HEXADECIMAL here, decimal in Xive (`steam:110000112345678` is a SteamID64 in hex).
               Do not "helpfully" convert it — that breaks the match silently, for every player.
@@ -29,7 +30,7 @@
               Nothing is typed and nothing is trusted: the binding is made during a session Steam
               vouched for.
 
-  Sending fewer identifiers than FiveM offers is what breaks the second one. Send the list whole.
+  Dropping `license:` is what breaks the second one. Send both, unaltered.
 
   ── FAILURE POLICY ──────────────────────────────────────────────────────────────────────────
 
@@ -62,14 +63,41 @@ local function log(fmt, ...)
   end
 end
 
+--[[
+  ── 🔴 WHAT IS ALLOWED TO LEAVE THIS MACHINE ───────────────────────────────────────────────
+
+  An ALLOWLIST, and deliberately not a blocklist. GetPlayerIdentifiers returns whatever the
+  running FiveM build knows about the player — `discord:`, `ip:`, `xbl:`, `live:`, `license2:`,
+  `fivem:` — and Xive reads exactly two of them. Sending the rest would put a player's Discord id
+  and IP address on the wire to answer a question that uses neither.
+
+  A blocklist would send the next identifier FiveM invents without anybody having decided to. An
+  allowlist silently fails to send it instead, which costs nothing and can be fixed here.
+]]
+local SENT_IDENTIFIERS = { ['steam:'] = true, ['license:'] = true }
+
+--- The identifiers Xive is allowed to see, in the order FiveM gave them.
+local function sendableIdentifiers(identifiers)
+  local out = {}
+  for _, id in ipairs(identifiers) do
+    -- The prefix INCLUDING its colon, so `license2:` cannot match `license:`.
+    local prefix = id:match('^[^:]+:')
+    if prefix and SENT_IDENTIFIERS[prefix:lower()] then
+      out[#out + 1] = id
+    end
+  end
+  return out
+end
+
 --- The first identifier we would recognise, used as the cache key.
---- Steam first because it is the one Xive can actually match today.
+--- Steam first because it is the strongest. License second because every player has one, so
+--- somebody who joins with Steam closed still gets the benefit of the cache.
 local function cacheKeyFor(identifiers)
   for _, id in ipairs(identifiers) do
     if id:sub(1, 6) == 'steam:' then return id end
   end
   for _, id in ipairs(identifiers) do
-    if id:sub(1, 8) == 'discord:' then return id end
+    if id:sub(1, 8) == 'license:' then return id end
   end
   return nil
 end
@@ -184,9 +212,12 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
 
     deferrals.update(Config.Messages.checking)
 
-    local identifiers = GetPlayerIdentifiers(source)
+    local identifiers = sendableIdentifiers(GetPlayerIdentifiers(source))
     if #identifiers == 0 then
-      -- No identifiers at all is not a whitelist decision, it is a broken connection.
+      -- Neither a Steam account nor a license reached us. Nothing Xive could match, so there is
+      -- nothing to ask — answered here rather than by a round trip that can only come back the
+      -- same way. A connection with no identifiers at all lands here too, and it is not a
+      -- whitelist decision so much as a broken connection.
       answer(reasonText('no_supported_identifier'))
       return
     end
