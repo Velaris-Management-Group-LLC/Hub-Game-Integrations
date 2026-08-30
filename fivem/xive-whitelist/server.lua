@@ -98,7 +98,7 @@ end
 ]]
 local function answerer(deferrals)
   local answered = false
-  return function(message)
+  local answer = function(message)
     if answered then return end
     answered = true
     if message then
@@ -107,6 +107,18 @@ local function answerer(deferrals)
       deferrals.done()
     end
   end
+  --[[
+    🔴 THE WATCHDOG NEEDS TO KNOW, NOT JUST BE HARMLESS.
+
+    `answer` being idempotent stopped the double `deferrals.done()`, so the player always got the
+    right verdict — but the watchdog still RAN, and still printed "Xive did not answer within 10s"
+    ten seconds after every single connection, including ones answered in 14ms. With the real
+    allow/deny line behind Config.Debug at the time, that spurious line was the only thing in the
+    console, and it sent an operator hunting a network fault while the API was answering perfectly.
+
+    A timer that cannot be cancelled has to be able to ask whether it is still needed.
+  ]]
+  return answer, function() return answered end
 end
 
 --- The message for a refusal reason, falling back to something a player can report.
@@ -144,7 +156,7 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
   local source = source
   deferrals.defer()
 
-  local answer = answerer(deferrals)
+  local answer, alreadyAnswered = answerer(deferrals)
 
   -- One frame before touching deferrals again, or the update is dropped. This is a FiveM
   -- requirement, not a stylistic pause.
@@ -189,7 +201,14 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
       decides and the other is a no-op.
     ]]
     SetTimeout(REQUEST_TIMEOUT_SECONDS * 1000, function()
-      print(('[xive-whitelist] Xive did not answer within %ds.'):format(REQUEST_TIMEOUT_SECONDS))
+      -- 🔴 THE FIRST THING IT DOES. SetTimeout cannot be cancelled, so the answered check is what
+      -- turns this from "fires on every connection" into "fires only when nothing else did".
+      if alreadyAnswered() then return end
+
+      -- Naming the player matters here more than anywhere: a timeout is the one outcome where
+      -- nothing reaches Xive, so this console line is the ONLY record that the attempt happened.
+      print(('[xive-whitelist] TIMEOUT after %ds for %s — no answer from Xive.')
+        :format(REQUEST_TIMEOUT_SECONDS, key or 'no-key'))
       if cachedAllow(key) then
         print('[xive-whitelist] admitting a recently-verified player from cache.')
         answer(nil)
@@ -208,10 +227,18 @@ AddEventHandler('playerConnecting', function(name, setKickReason, deferrals)
         if okDecode and payload and payload.allowed ~= nil then
           if payload.allowed then
             rememberAllow(key)
-            log('allow %s (%s)', tostring(payload.display_name), key or 'no-key')
+            --[[
+              ⚠️ PRINTED UNCONDITIONALLY, not behind Config.Debug.
+
+              One line per connecting player is what makes "player X says they were refused"
+              answerable without turning anything on and asking them to try again — and Debug
+              defaults to false, so during setup the outcomes were invisible exactly when they
+              mattered most. The verbose `log()` calls stay behind the flag.
+            ]]
+            print(('[xive-whitelist] ALLOW %s (%s)'):format(tostring(payload.display_name), key or 'no-key'))
             answer(nil)
           else
-            log('deny %s: %s', key or 'no-key', tostring(payload.reason))
+            print(('[xive-whitelist] DENY %s: %s'):format(key or 'no-key', tostring(payload.reason)))
             answer(reasonText(payload.reason))
           end
           return
